@@ -13,7 +13,18 @@ public class ScheduledTaskClientTests
         const string expected = "任务创建失败：拒绝访问";
         var bytes = Encoding.UTF8.GetBytes(expected);
 
-        var actual = ScheduledTaskClient.DecodeProcessOutput(bytes);
+        var actual = ScheduledTaskClient.DecodeProcessOutput(bytes, Encoding.UTF8);
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void DecodeProcessOutput_BomlessBytes_UsesProvidedFallbackEncoding()
+    {
+        const string expected = "caf\u00e9";
+        var bytes = Encoding.Latin1.GetBytes(expected);
+
+        var actual = ScheduledTaskClient.DecodeProcessOutput(bytes, Encoding.Latin1);
 
         Assert.Equal(expected, actual);
     }

@@ -9,20 +9,38 @@ namespace LuckyLilliaDesktop.Utils;
 /// 任务计划程序 XML 中与开机自启有关的最小定义。
 /// 与系统调用分离，便于在非 Windows 环境中测试解析逻辑。
 /// </summary>
-internal readonly record struct StartupTaskDefinition(
-    bool TaskEnabled,
-    bool HasEnabledLogonTrigger,
-    bool UsesLimitedRunLevel,
-    bool UsesInteractiveLogon,
-    string? ExecutablePath)
+internal readonly record struct StartupTaskDefinition
 {
+    private readonly bool _taskEnabled;
+    private readonly bool _hasEnabledLogonTrigger;
+    private readonly bool _usesLimitedRunLevel;
+    private readonly bool _usesInteractiveLogon;
+    private readonly string? _executablePath;
+
+    public StartupTaskDefinition(
+        bool taskEnabled,
+        bool hasEnabledLogonTrigger,
+        bool usesLimitedRunLevel,
+        bool usesInteractiveLogon,
+        string? executablePath)
+    {
+        _taskEnabled = taskEnabled;
+        _hasEnabledLogonTrigger = hasEnabledLogonTrigger;
+        _usesLimitedRunLevel = usesLimitedRunLevel;
+        _usesInteractiveLogon = usesInteractiveLogon;
+        _executablePath = executablePath;
+    }
+
+    public bool IsSafeLogonTask =>
+        _taskEnabled &&
+        _hasEnabledLogonTrigger &&
+        _usesLimitedRunLevel &&
+        _usesInteractiveLogon;
+
     public bool TargetsExecutable(string expectedExecutablePath)
     {
-        return TaskEnabled &&
-               HasEnabledLogonTrigger &&
-               UsesLimitedRunLevel &&
-               UsesInteractiveLogon &&
-               StartupTaskDefinitionParser.PathsEqual(ExecutablePath, expectedExecutablePath);
+        return IsSafeLogonTask &&
+               StartupTaskDefinitionParser.PathsEqual(_executablePath, expectedExecutablePath);
     }
 }
 

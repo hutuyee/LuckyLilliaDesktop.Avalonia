@@ -15,6 +15,7 @@ public class StartupTaskDefinitionTests
         var parsed = StartupTaskDefinitionParser.TryParse(xml, out var definition, out var error);
 
         Assert.True(parsed, error);
+        Assert.True(definition.IsSafeLogonTask);
         Assert.True(definition.TargetsExecutable(CurrentExecutable));
     }
 
@@ -26,6 +27,7 @@ public class StartupTaskDefinitionTests
         var parsed = StartupTaskDefinitionParser.TryParse(xml, out var definition, out var error);
 
         Assert.True(parsed, error);
+        Assert.False(definition.IsSafeLogonTask);
         Assert.False(definition.TargetsExecutable(CurrentExecutable));
     }
 

@@ -25,6 +25,8 @@ public static class StartupManager
 
         try
         {
+            // 任务检查与旧配置迁移必须在同一临界区内完成；否则并发关闭时，
+            // 已等待的迁移操作可能在关闭后重新创建自启任务。
             lock (SyncRoot)
             {
                 var task = InspectScheduledTask(exePath);

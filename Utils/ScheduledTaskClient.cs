@@ -16,7 +16,8 @@ internal static class ScheduledTaskClient
     public const int MaxTaskCommandLength = 262;
 
     private const int ProcessTimeoutMilliseconds = 10_000;
-    private const int StreamDrainTimeoutMilliseconds = 2_000;
+    // 进程终止后仍需给输出流短暂收尾，避免 CopyToAsync 继续写入已释放的缓冲区。
+    private const int StreamCleanupGracePeriodMilliseconds = 2_000;
     private const int MaxDiagnosticLength = 2_000;
 
     // 使用 /HResult 后，任务不存在通常返回 HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND/PATH_NOT_FOUND)。
@@ -85,20 +86,7 @@ internal static class ScheduledTaskClient
 
         try
         {
-            var processResult = RunProcess(schtasksPath, arguments);
-            var status = processResult switch
-            {
-                { TimedOut: true } => ScheduledTaskCommandStatus.TimedOut,
-                { ExitCode: 0 } => ScheduledTaskCommandStatus.Success,
-                _ when IsNotFoundExitCode(processResult.ExitCode) => ScheduledTaskCommandStatus.NotFound,
-                _ => ScheduledTaskCommandStatus.Failed
-            };
-
-            return new ScheduledTaskCommandResult(
-                status,
-                processResult.ExitCode,
-                processResult.Output,
-                processResult.Error);
+            return RunProcess(schtasksPath, arguments);
         }
         catch (Exception ex)
         {
@@ -110,7 +98,7 @@ internal static class ScheduledTaskClient
         }
     }
 
-    private static ProcessResult RunProcess(string fileName, params string[] arguments)
+    private static ScheduledTaskCommandResult RunProcess(string fileName, params string[] arguments)
     {
         using var process = new Process
         {
@@ -139,17 +127,21 @@ internal static class ScheduledTaskClient
             TryTerminate(process);
             var streamsDrained = DrainStreams(outputTask, errorTask);
             ReleaseOutputBuffers(outputBuffer, errorBuffer, outputTask, errorTask, streamsDrained);
-            return new ProcessResult(-1, string.Empty, string.Empty, TimedOut: true);
+            return new ScheduledTaskCommandResult(
+                ScheduledTaskCommandStatus.TimedOut,
+                -1,
+                string.Empty,
+                string.Empty);
         }
 
         if (!DrainStreams(outputTask, errorTask))
         {
             ReleaseOutputBuffers(outputBuffer, errorBuffer, outputTask, errorTask, streamsDrained: false);
-            return new ProcessResult(
+            return new ScheduledTaskCommandResult(
+                ScheduledTaskCommandStatus.Failed,
                 -1,
                 string.Empty,
-                "系统命令已退出，但读取命令输出超时。",
-                TimedOut: false);
+                "系统命令已退出，但读取命令输出超时。");
         }
 
         var output = DecodeProcessOutput(outputBuffer.ToArray());
@@ -157,7 +149,14 @@ internal static class ScheduledTaskClient
         outputBuffer.Dispose();
         errorBuffer.Dispose();
 
-        return new ProcessResult(process.ExitCode, output, error, TimedOut: false);
+        var status = process.ExitCode switch
+        {
+            0 => ScheduledTaskCommandStatus.Success,
+            var exitCode when IsNotFoundExitCode(exitCode) => ScheduledTaskCommandStatus.NotFound,
+            _ => ScheduledTaskCommandStatus.Failed
+        };
+
+        return new ScheduledTaskCommandResult(status, process.ExitCode, output, error);
     }
 
     private static void TryTerminate(Process process)
@@ -165,7 +164,7 @@ internal static class ScheduledTaskClient
         try
         {
             process.Kill(entireProcessTree: true);
-            process.WaitForExit(StreamDrainTimeoutMilliseconds);
+            process.WaitForExit(StreamCleanupGracePeriodMilliseconds);
         }
         catch
         {
@@ -177,7 +176,7 @@ internal static class ScheduledTaskClient
     {
         try
         {
-            return Task.WaitAll(streamTasks, StreamDrainTimeoutMilliseconds);
+            return Task.WaitAll(streamTasks, StreamCleanupGracePeriodMilliseconds);
         }
         catch
         {
@@ -212,8 +211,13 @@ internal static class ScheduledTaskClient
             TaskScheduler.Default);
     }
 
-    internal static string DecodeProcessOutput(byte[] bytes)
+    internal static string DecodeProcessOutput(byte[] bytes) =>
+        DecodeProcessOutput(bytes, GetFallbackOutputEncoding());
+
+    internal static string DecodeProcessOutput(byte[] bytes, Encoding fallbackEncoding)
     {
+        ArgumentNullException.ThrowIfNull(fallbackEncoding);
+
         if (bytes.Length == 0)
             return string.Empty;
 
@@ -226,24 +230,30 @@ internal static class ScheduledTaskClient
         if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
             return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
 
-        // schtasks /Query /XML 在部分 Windows 版本中输出无 BOM 的 UTF-16。
         if (bytes.Length >= 4 && bytes[1] == 0 && bytes[3] == 0)
             return Encoding.Unicode.GetString(bytes);
 
         if (bytes.Length >= 4 && bytes[0] == 0 && bytes[2] == 0)
             return Encoding.BigEndianUnicode.GetString(bytes);
 
-        return Encoding.UTF8.GetString(bytes);
+        return fallbackEncoding.GetString(bytes);
+    }
+
+    private static Encoding GetFallbackOutputEncoding()
+    {
+        try
+        {
+            return Console.OutputEncoding;
+        }
+        catch
+        {
+            // WinExe 进程可能没有附加控制台，此时保守回退到 UTF-8。
+            return Encoding.UTF8;
+        }
     }
 
     private static bool IsNotFoundExitCode(int exitCode) =>
         exitCode is 2 or 3 or HResultFileNotFound or HResultPathNotFound;
-
-    private readonly record struct ProcessResult(
-        int ExitCode,
-        string Output,
-        string Error,
-        bool TimedOut);
 }
 
 internal enum ScheduledTaskCommandStatus
