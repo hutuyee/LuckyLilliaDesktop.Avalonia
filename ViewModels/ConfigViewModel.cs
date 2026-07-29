@@ -553,6 +553,9 @@ public class ConfigViewModel : ViewModelBase
 
     private async Task LoadConfigAsync()
     {
+        if (IsSaving)
+            return;
+
         try
         {
             var config = await _configManager.LoadConfigAsync();
@@ -647,9 +650,13 @@ public class ConfigViewModel : ViewModelBase
 
     private async Task SaveConfigAsync()
     {
+        if (IsSaving)
+            return;
+
         try
         {
             IsSaving = true;
+            var requestedStartupEnabled = StartupEnabled;
             _logger.LogInformation("开始保存配置...");
 
             // 先读现有配置再改, 只覆盖本页拥有的字段.
@@ -695,28 +702,59 @@ public class ConfigViewModel : ViewModelBase
 
             if (success && emailSuccess)
             {
-                // 保存时处理开机自启注册表
-                if (StartupEnabled != _savedStartupEnabled)
-                {
-                    bool startupResult;
-                    if (StartupEnabled)
-                        startupResult = Utils.StartupManager.EnableStartup();
-                    else
-                        startupResult = Utils.StartupManager.DisableStartup();
+                StartupOperationResult? startupOperation = null;
 
-                    if (!startupResult)
+                // 系统自启注册可能触发磁盘、注册表和系统服务 I/O，放到后台线程避免阻塞界面。
+                if (requestedStartupEnabled != _savedStartupEnabled)
+                {
+                    startupOperation = await Task.Run(() => requestedStartupEnabled
+                        ? StartupManager.TryEnableStartup()
+                        : StartupManager.TryDisableStartup());
+
+                    if (!startupOperation.Value.Success)
                     {
-                        _logger.LogError("设置开机自启失败，可能是路径无效或权限不足");
+                        _logger.LogError("设置开机自启失败: {ErrorMessage}", startupOperation.Value.ErrorMessage);
                         _startupEnabled = _savedStartupEnabled;
                         this.RaisePropertyChanged(nameof(StartupEnabled));
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrWhiteSpace(startupOperation.Value.DiagnosticMessage))
+                        {
+                            _logger.LogWarning(
+                                "开机自启设置完成但存在警告: {DiagnosticMessage}",
+                                startupOperation.Value.DiagnosticMessage);
+                        }
+
+                        if (_startupEnabled != requestedStartupEnabled)
+                        {
+                            // 保存期间配置区会被禁用；这里仍以实际执行的请求为准，防止未来 UI 改动引入竞态。
+                            _startupEnabled = requestedStartupEnabled;
+                            this.RaisePropertyChanged(nameof(StartupEnabled));
+                        }
                     }
                 }
 
                 _savedConfig = config;
-                _savedStartupEnabled = StartupEnabled;
+                _savedStartupEnabled = _startupEnabled;
                 _savedEmailConfig = emailConfig;
                 HasUnsavedChanges = false;
-                _logger.LogInformation("配置已保存");
+
+                if (startupOperation.HasValue && !startupOperation.Value.Success)
+                {
+                    _logger.LogWarning("其他配置已保存，但开机自启设置未生效");
+                    await ShowAlertAsync("开机自启设置失败", startupOperation.Value.ErrorMessage);
+                }
+                else if (startupOperation.HasValue &&
+                         !string.IsNullOrWhiteSpace(startupOperation.Value.DiagnosticMessage))
+                {
+                    _logger.LogInformation("配置已保存，开机自启设置存在警告");
+                    await ShowAlertAsync("开机自启提示", startupOperation.Value.DiagnosticMessage);
+                }
+                else
+                {
+                    _logger.LogInformation("配置已保存");
+                }
             }
             else
             {

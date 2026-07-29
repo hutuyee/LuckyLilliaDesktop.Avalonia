@@ -16,4 +16,9 @@
     </PackageReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../Utils/ScheduledTaskClient.cs" Link="Utils\ScheduledTaskClient.cs" />
+    <Compile Include="../Utils/StartupTaskDefinition.cs" Link="Utils\StartupTaskDefinition.cs" />
+  </ItemGroup>
+
 </Project>
