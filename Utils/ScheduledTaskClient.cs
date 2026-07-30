@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -23,6 +25,8 @@ internal static class ScheduledTaskClient
     // 使用 /HResult 后，任务不存在通常返回 HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND/PATH_NOT_FOUND)。
     private const int HResultFileNotFound = unchecked((int)0x80070002);
     private const int HResultPathNotFound = unchecked((int)0x80070003);
+    private const int Win32AccessDenied = 5;
+    private const int HResultAccessDenied = unchecked((int)0x80070005);
 
     public static ScheduledTaskCommandResult CreateLogonTask(
         string taskName,
@@ -58,6 +62,12 @@ internal static class ScheduledTaskClient
     {
         if (result.Status == ScheduledTaskCommandStatus.TimedOut)
             return $"{operation}：系统命令执行超时。";
+
+        if (IsAccessDenied(result))
+        {
+            return $"{operation}（退出代码：0x{unchecked((uint)result.ExitCode):X8}）：" +
+                   "访问被拒绝。当前进程可能没有管理任务计划程序所需的权限。";
+        }
 
         var detail = !string.IsNullOrWhiteSpace(result.Error)
             ? result.Error.Trim()
@@ -211,8 +221,69 @@ internal static class ScheduledTaskClient
             TaskScheduler.Default);
     }
 
-    internal static string DecodeProcessOutput(byte[] bytes) =>
-        DecodeProcessOutput(bytes, GetFallbackOutputEncoding());
+    internal static string DecodeProcessOutput(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+            return string.Empty;
+
+        if (HasKnownUnicodeEncoding(bytes))
+            return DecodeProcessOutput(bytes, Encoding.UTF8);
+
+        return DecodeSystemDiagnostic(bytes);
+    }
+
+    private static bool HasKnownUnicodeEncoding(byte[] bytes)
+    {
+        return (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) ||
+               (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) ||
+               (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) ||
+               (bytes.Length >= 4 && bytes[1] == 0 && bytes[3] == 0) ||
+               (bytes.Length >= 4 && bytes[0] == 0 && bytes[2] == 0);
+    }
+
+    private static string DecodeSystemDiagnostic(byte[] bytes)
+    {
+        if (!OperatingSystem.IsWindows())
+            return Encoding.UTF8.GetString(bytes);
+
+        try
+        {
+            return DecodeWindowsOem(bytes);
+        }
+        catch
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string DecodeWindowsOem(byte[] bytes)
+    {
+        var codePage = GetOemCodePage();
+        var characterCount = MultiByteToWideChar(
+            codePage,
+            flags: 0,
+            bytes,
+            bytes.Length,
+            null,
+            0);
+
+        if (characterCount <= 0)
+            return Encoding.UTF8.GetString(bytes);
+
+        var characters = new char[characterCount];
+        var converted = MultiByteToWideChar(
+            codePage,
+            flags: 0,
+            bytes,
+            bytes.Length,
+            characters,
+            characters.Length);
+
+        return converted > 0
+            ? new string(characters, 0, converted)
+            : Encoding.UTF8.GetString(bytes);
+    }
 
     internal static string DecodeProcessOutput(byte[] bytes, Encoding fallbackEncoding)
     {
@@ -239,18 +310,25 @@ internal static class ScheduledTaskClient
         return fallbackEncoding.GetString(bytes);
     }
 
-    private static Encoding GetFallbackOutputEncoding()
-    {
-        try
-        {
-            return Console.OutputEncoding;
-        }
-        catch
-        {
-            // WinExe 进程可能没有附加控制台，此时保守回退到 UTF-8。
-            return Encoding.UTF8;
-        }
-    }
+    internal static bool IsAccessDenied(ScheduledTaskCommandResult result) =>
+        result.ExitCode is Win32AccessDenied or HResultAccessDenied;
+
+    [DllImport("kernel32.dll")]
+    [SupportedOSPlatform("windows")]
+    private static extern uint GetOEMCP();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [SupportedOSPlatform("windows")]
+    private static extern int MultiByteToWideChar(
+        uint codePage,
+        uint flags,
+        byte[] multiByteText,
+        int byteCount,
+        [Out] char[]? wideText,
+        int characterCount);
+
+    [SupportedOSPlatform("windows")]
+    private static uint GetOemCodePage() => GetOEMCP();
 
     private static bool IsNotFoundExitCode(int exitCode) =>
         exitCode is 2 or 3 or HResultFileNotFound or HResultPathNotFound;

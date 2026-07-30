@@ -80,4 +80,21 @@ public class ScheduledTaskClientTests
     {
         Assert.Equal(string.Empty, ScheduledTaskClient.DecodeProcessOutput([]));
     }
+    [Theory]
+    [InlineData(5)]
+    [InlineData(unchecked((int)0x80070005))]
+    public void DescribeFailure_AccessDenied_ReturnsStableChineseMessage(int exitCode)
+    {
+        var result = new ScheduledTaskCommandResult(
+            ScheduledTaskCommandStatus.Failed,
+            exitCode,
+            string.Empty,
+            "��������");
+
+        var actual = ScheduledTaskClient.DescribeFailure("创建计划任务失败", result);
+
+        Assert.Contains("访问被拒绝", actual);
+        Assert.DoesNotContain("�", actual);
+    }
+
 }

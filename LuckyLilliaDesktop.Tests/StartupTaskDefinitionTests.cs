@@ -78,6 +78,7 @@ public class StartupTaskDefinitionTests
     [Theory]
     [InlineData("\"C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe\"")]
     [InlineData("\"C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe\" --minimized")]
+    [InlineData("\"C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe\" --startup-delay=5")]
     [InlineData("C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe")]
     [InlineData("C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe --minimized")]
     public void LegacyCommand_TargetingCurrentExecutable_IsRecognized(string commandLine)

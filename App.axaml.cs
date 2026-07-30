@@ -28,18 +28,18 @@ public partial class App : Application
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         Console.CancelKeyPress += OnCancelKeyPress;
         
-        // 将旧版注册表自启项迁移到当前用户的任务计划项。
-        // 系统命令可能等待任务计划服务，放到后台执行，避免拖慢主窗口显示。
+        // 检查并清理指向旧程序路径的注册表自启项。
+        // 注册表访问放到后台执行，避免拖慢主窗口显示。
         _ = Task.Run(() =>
         {
             var startupMigration = StartupManager.TryMigrateFromLegacyRegistry();
             if (!startupMigration.Success)
             {
-                Log.Warning("迁移旧版开机自启配置失败: {ErrorMessage}", startupMigration.ErrorMessage);
+                Log.Warning("检查旧版开机自启配置失败: {ErrorMessage}", startupMigration.ErrorMessage);
             }
             else if (!string.IsNullOrWhiteSpace(startupMigration.DiagnosticMessage))
             {
-                Log.Warning("开机自启迁移完成但存在警告: {DiagnosticMessage}", startupMigration.DiagnosticMessage);
+                Log.Warning("开机自启兼容检查完成但存在提示: {DiagnosticMessage}", startupMigration.DiagnosticMessage);
             }
         });
         

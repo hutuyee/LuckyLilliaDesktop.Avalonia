@@ -1,6 +1,8 @@
 using Avalonia;
 using System;
 using System.Text;
+using System.Linq;
+using System.Threading;
 using LuckyLilliaDesktop.Utils;
 
 namespace LuckyLilliaDesktop;
@@ -12,6 +14,8 @@ class Program
     {
         try
         {
+            args = ApplyStartupDelay(args);
+
             // Windows AppCompat 可能给本 exe 打上 __COMPAT_LAYER (如 DetectorsAppHealth),
             // 该变量会被子进程继承。QQ 一旦继承, apphelp 的 GetProcAddress 挂钩
             // (SE_GetProcAddressForCaller) 会在 PMHQ 手动注入的 pmhq.dll (未在 PEB 登记,
@@ -120,6 +124,23 @@ class Program
             System.IO.File.WriteAllText("crash.log", $"{DateTime.Now}: {ex}");
             throw;
         }
+    }
+
+    private static string[] ApplyStartupDelay(string[] args)
+    {
+        if (!OperatingSystem.IsWindows() ||
+            !args.Contains(StartupManager.RegistryStartupDelayArgument, StringComparer.Ordinal))
+        {
+            return args;
+        }
+
+        Thread.Sleep(TimeSpan.FromSeconds(5));
+        return args
+            .Where(argument => !string.Equals(
+                argument,
+                StartupManager.RegistryStartupDelayArgument,
+                StringComparison.Ordinal))
+            .ToArray();
     }
 
     private static AppBuilder BuildAvaloniaApp()
