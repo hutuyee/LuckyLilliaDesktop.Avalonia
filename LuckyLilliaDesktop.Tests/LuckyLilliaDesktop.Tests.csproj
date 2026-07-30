@@ -17,8 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="../Utils/ScheduledTaskClient.cs" Link="Utils\ScheduledTaskClient.cs" />
-    <Compile Include="../Utils/StartupTaskDefinition.cs" Link="Utils\StartupTaskDefinition.cs" />
+    <Compile Include="../Utils/StartupCommandLine.cs" Link="Utils\StartupCommandLine.cs" />
   </ItemGroup>
 
 </Project>

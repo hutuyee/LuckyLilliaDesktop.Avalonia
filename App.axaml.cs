@@ -37,10 +37,6 @@ public partial class App : Application
             {
                 Log.Warning("清理无效开机自启注册表值失败: {ErrorMessage}", cleanup.ErrorMessage);
             }
-            else if (!string.IsNullOrWhiteSpace(cleanup.DiagnosticMessage))
-            {
-                Log.Information("{DiagnosticMessage}", cleanup.DiagnosticMessage);
-            }
         });
         
         Log.Information("应用初始化完成");

@@ -129,7 +129,7 @@ class Program
     private static string[] ApplyStartupDelay(string[] args)
     {
         if (!OperatingSystem.IsWindows() ||
-            !args.Contains(StartupManager.RegistryStartupDelayArgument, StringComparer.Ordinal))
+            !args.Contains(StartupManager.StartupDelayArgument, StringComparer.Ordinal))
         {
             return args;
         }
@@ -138,7 +138,7 @@ class Program
         return args
             .Where(argument => !string.Equals(
                 argument,
-                StartupManager.RegistryStartupDelayArgument,
+                StartupManager.StartupDelayArgument,
                 StringComparison.Ordinal))
             .ToArray();
     }

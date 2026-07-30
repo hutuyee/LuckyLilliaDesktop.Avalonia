@@ -704,7 +704,7 @@ public class ConfigViewModel : ViewModelBase
             {
                 StartupOperationResult? startupOperation = null;
 
-                // 系统自启注册可能触发磁盘、注册表和系统服务 I/O，放到后台线程避免阻塞界面。
+                // 注册表读写放到后台线程，避免阻塞界面。
                 if (requestedStartupEnabled != _savedStartupEnabled)
                 {
                     startupOperation = await Task.Run(() => requestedStartupEnabled
@@ -717,21 +717,11 @@ public class ConfigViewModel : ViewModelBase
                         _startupEnabled = _savedStartupEnabled;
                         this.RaisePropertyChanged(nameof(StartupEnabled));
                     }
-                    else
+                    else if (_startupEnabled != requestedStartupEnabled)
                     {
-                        if (!string.IsNullOrWhiteSpace(startupOperation.Value.DiagnosticMessage))
-                        {
-                            _logger.LogWarning(
-                                "开机自启设置完成但存在警告: {DiagnosticMessage}",
-                                startupOperation.Value.DiagnosticMessage);
-                        }
-
-                        if (_startupEnabled != requestedStartupEnabled)
-                        {
-                            // 保存期间配置区会被禁用；这里仍以实际执行的请求为准，防止未来 UI 改动引入竞态。
-                            _startupEnabled = requestedStartupEnabled;
-                            this.RaisePropertyChanged(nameof(StartupEnabled));
-                        }
+                        // 保存期间配置区会被禁用；这里仍以实际执行的请求为准，防止未来 UI 改动引入竞态。
+                        _startupEnabled = requestedStartupEnabled;
+                        this.RaisePropertyChanged(nameof(StartupEnabled));
                     }
                 }
 
@@ -743,13 +733,10 @@ public class ConfigViewModel : ViewModelBase
                 if (startupOperation.HasValue && !startupOperation.Value.Success)
                 {
                     _logger.LogWarning("其他配置已保存，但开机自启设置未生效");
-                    await ShowAlertAsync("开机自启设置失败", startupOperation.Value.ErrorMessage);
-                }
-                else if (startupOperation.HasValue &&
-                         !string.IsNullOrWhiteSpace(startupOperation.Value.DiagnosticMessage))
-                {
-                    _logger.LogInformation("配置已保存，开机自启设置存在警告");
-                    await ShowAlertAsync("开机自启提示", startupOperation.Value.DiagnosticMessage);
+                    await ShowAlertAsync(
+                        "开机自启设置失败",
+                        "无法更新当前用户的开机自启设置。请检查安全软件或系统策略是否阻止程序修改启动项，然后重试。" +
+                        $"\n\n详细信息：{startupOperation.Value.ErrorMessage}");
                 }
                 else
                 {
