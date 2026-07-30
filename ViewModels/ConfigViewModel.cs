@@ -23,6 +23,7 @@ public class ConfigViewModel : ViewModelBase
 
     private AppConfig _savedConfig = new();
     private bool _savedStartupEnabled;
+    private bool _isStartupConfirmDialogOpen;
     private EmailConfig _savedEmailConfig = new();
 
     private bool _hasUnsavedChanges;
@@ -169,7 +170,8 @@ public class ConfigViewModel : ViewModelBase
 
             if (value && string.IsNullOrWhiteSpace(AutoLoginQQ))
             {
-                ShowStartupConfirmDialog();
+                if (!_isStartupConfirmDialogOpen)
+                    ShowStartupConfirmDialog();
             }
             else
             {
@@ -182,6 +184,10 @@ public class ConfigViewModel : ViewModelBase
 
     private async void ShowStartupConfirmDialog()
     {
+        if (_isStartupConfirmDialogOpen)
+            return;
+
+        _isStartupConfirmDialogOpen = true;
         try
         {
             if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
@@ -212,6 +218,10 @@ public class ConfigViewModel : ViewModelBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "显示开机自启确认对话框失败");
+        }
+        finally
+        {
+            _isStartupConfirmDialogOpen = false;
         }
     }
 
@@ -714,7 +724,9 @@ public class ConfigViewModel : ViewModelBase
                     if (!startupOperation.Value.Success)
                     {
                         _logger.LogError("设置开机自启失败: {ErrorMessage}", startupOperation.Value.ErrorMessage);
-                        _startupEnabled = _savedStartupEnabled;
+                        // 操作可能已经部分完成（例如注册表删除成功、旧任务删除失败），
+                        // 失败后重新读取真实状态，避免界面机械回滚到过期值。
+                        _startupEnabled = await Task.Run(() => StartupManager.IsStartupEnabled());
                         this.RaisePropertyChanged(nameof(StartupEnabled));
                     }
                     else if (_startupEnabled != requestedStartupEnabled)

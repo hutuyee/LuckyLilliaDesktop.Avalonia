@@ -28,14 +28,14 @@ public partial class App : Application
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         Console.CancelKeyPress += OnCancelKeyPress;
         
-        // 程序被移动后，旧路径的 HKCU Run 值已经无法启动当前程序。
-        // 后台安全清理本应用自己的单个注册表值，避免阻塞主窗口显示。
+        // 后台检查开机自启：清理失效的 HKCU Run 值，并迁移旧版本
+        // 创建的同名计划任务。新的自启方式仍只使用当前用户注册表。
         _ = Task.Run(() =>
         {
             var cleanup = StartupManager.TryCleanupInvalidRegistryStartup();
             if (!cleanup.Success)
             {
-                Log.Warning("清理无效开机自启注册表值失败: {ErrorMessage}", cleanup.ErrorMessage);
+                Log.Warning("检查或迁移开机自启配置失败: {ErrorMessage}", cleanup.ErrorMessage);
             }
         });
         

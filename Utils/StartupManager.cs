@@ -7,7 +7,8 @@ namespace LuckyLilliaDesktop.Utils;
 
 /// <summary>
 /// 管理 Windows 当前用户的登录自启。
-/// 仅操作 HKCU Run 下属于本应用的单个注册表值，不需要提升权限。
+/// 新的自启配置仅写入 HKCU Run，不需要提升权限；同时兼容清理旧版本
+/// 曾创建的同名计划任务，避免升级后无法关闭或重复启动。
 /// </summary>
 public static class StartupManager
 {
@@ -21,7 +22,8 @@ public static class StartupManager
     internal const string StartupDelayArgument = "--startup-delay=5";
 
     /// <summary>
-    /// 检查当前用户的开机自启状态。程序移动后，只会清理确认属于本应用的旧值。
+    /// 检查当前用户的开机自启状态。注册表未启用时，也会识别旧版本
+    /// 遗留且确认属于本应用的计划任务。
     /// </summary>
     public static bool IsStartupEnabled()
     {
@@ -33,7 +35,12 @@ public static class StartupManager
             lock (SyncRoot)
             {
                 var validation = ValidateRegistryStartup(executablePath, out var isEnabled);
-                return validation.Success && isEnabled;
+                if (!validation.Success || isEnabled)
+                    return validation.Success && isEnabled;
+
+                // 仅识别旧版本遗留的同名计划任务，便于用户正常关闭并完成迁移。
+                return LegacyScheduledTaskManager.Inspect(executablePath).State ==
+                       LegacyScheduledTaskState.Owned;
             }
         }
         catch
@@ -86,16 +93,28 @@ public static class StartupManager
                 if (!TryReadStartupRegistryValue(out var value, out var readError))
                     return StartupOperationResult.Failed(readError);
 
+                StartupOperationResult registryCleanup;
                 if (!value.Exists)
-                    return StartupOperationResult.Succeeded();
-
-                if (value.Text == null || !IsApplicationStartupCommand(value.Text, executablePath))
                 {
-                    return StartupOperationResult.Failed(
-                        "检测到同名启动项，但无法确认它属于当前应用；为避免误删已保留该值。");
+                    registryCleanup = StartupOperationResult.Succeeded();
+                }
+                else
+                {
+                    if (value.Text == null || !IsApplicationStartupCommand(value.Text, executablePath))
+                    {
+                        return StartupOperationResult.Failed(
+                            "检测到同名启动项，但无法确认它属于当前应用；为避免误删已保留该值。");
+                    }
+
+                    registryCleanup = DeleteStartupRegistryValue(value.Text);
                 }
 
-                return DeleteStartupRegistryValue(value.Text);
+                if (!registryCleanup.Success)
+                    return registryCleanup;
+
+                // 兼容 3.0.8 早期版本创建的同名计划任务。新版本不再创建它，
+                // 但关闭自启时必须一并清理，否则用户会遇到“取消后仍然启动”。
+                return LegacyScheduledTaskManager.TryDeleteOwnedTask(executablePath);
             }
         }
         catch (Exception ex)
@@ -105,8 +124,8 @@ public static class StartupManager
     }
 
     /// <summary>
-    /// 清理程序移动后遗留的无效启动项。只删除 HKCU Run 下名为
-    /// LuckyLilliaDesktop 且确认属于本应用的单个值。
+    /// 清理程序移动后遗留的无效注册表值，并把旧版本创建的同名
+    /// 计划任务安全迁移到 HKCU Run。新版本不会创建新的计划任务。
     /// </summary>
     internal static StartupOperationResult TryCleanupInvalidRegistryStartup()
     {
@@ -120,12 +139,43 @@ public static class StartupManager
                 if (!TryGetCurrentExecutablePath(out var executablePath, out var pathError))
                     return StartupOperationResult.Failed(pathError);
 
-                return ValidateRegistryStartup(executablePath, out _);
+                var registryValidation = ValidateRegistryStartup(executablePath, out var registryEnabled);
+                if (!registryValidation.Success)
+                    return registryValidation;
+
+                var legacyTask = LegacyScheduledTaskManager.Inspect(executablePath);
+                switch (legacyTask.State)
+                {
+                    case LegacyScheduledTaskState.Missing:
+                    case LegacyScheduledTaskState.NotOwned:
+                        return StartupOperationResult.Succeeded();
+                    case LegacyScheduledTaskState.Unavailable:
+                        return StartupOperationResult.Failed(legacyTask.ErrorMessage);
+                }
+
+                // 旧版本可能只创建了计划任务。先写入并校验新的 HKCU Run 值，
+                // 再删除旧任务，保证迁移失败时不会直接丢失原有自启能力。
+                if (!registryEnabled)
+                {
+                    var migration = WriteStartupRegistryValue(executablePath);
+                    if (!migration.Success)
+                    {
+                        return StartupOperationResult.Failed(
+                            $"检测到旧版开机自启计划任务，但迁移到注册表失败：{migration.ErrorMessage}");
+                    }
+                }
+
+                var cleanup = LegacyScheduledTaskManager.TryDeleteOwnedTask(executablePath);
+                return cleanup.Success
+                    ? StartupOperationResult.Succeeded()
+                    : StartupOperationResult.Failed(
+                        "注册表开机自启已就绪，但旧版计划任务清理失败，登录时可能重复启动：" +
+                        cleanup.ErrorMessage);
             }
         }
         catch (Exception ex)
         {
-            return StartupOperationResult.Failed($"检查开机自启注册表值时发生异常：{ex.Message}");
+            return StartupOperationResult.Failed($"检查或迁移开机自启配置时发生异常：{ex.Message}");
         }
     }
 
