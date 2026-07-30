@@ -14,13 +14,16 @@ public static class StartupManager
     private const string TaskName = "LuckyLilliaDesktop";
     private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const int MaxRegistryCommandLength = 260;
+    private static readonly string[] KnownExecutableNames =
+        ["LuckyLilliaDesktop.exe", "lucky-lillia-desktop.exe"];
+
     internal const string RegistryStartupDelayArgument = "--startup-delay=5";
 
     private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(5);
     private static readonly object SyncRoot = new();
 
     /// <summary>
-    /// 检查当前登录自启状态。计划任务或当前用户注册表启动项任意一个有效即视为启用。
+    /// 检查当前登录自启状态。移动程序后，旧路径注册表值会被安全清理并视为未启用。
     /// </summary>
     public static bool IsStartupEnabled()
     {
@@ -31,8 +34,8 @@ public static class StartupManager
         {
             lock (SyncRoot)
             {
-                // 注册表后备不依赖任务计划服务，优先检查可避免权限受限环境中的无效等待。
-                if (IsRegistryStartupEnabled(exePath))
+                _ = ValidateRegistryStartup(exePath, out var registryEnabled);
+                if (registryEnabled)
                     return true;
 
                 return InspectScheduledTask(exePath).IsValidForCurrentExecutable;
@@ -75,8 +78,12 @@ public static class StartupManager
         {
             lock (SyncRoot)
             {
-                var usesRegistryFallback = TryGetCurrentExecutablePath(out var exePath, out _) &&
-                                           IsRegistryStartupEnabled(exePath);
+                if (!TryGetCurrentExecutablePath(out var exePath, out var pathError))
+                    return StartupOperationResult.Failed(pathError);
+
+                var registryValidation = ValidateRegistryStartup(exePath, out var usesRegistryFallback);
+                if (!registryValidation.Success)
+                    return registryValidation;
 
                 if (usesRegistryFallback)
                 {
@@ -108,11 +115,10 @@ public static class StartupManager
     }
 
     /// <summary>
-    /// 保留旧版公开入口。现在 HKCU Run 同时作为任务计划程序不可用时的正式后备方案。
+    /// 清理移动程序后遗留的无效 HKCU Run 值。只会操作当前用户 Run 键下
+    /// 名为 LuckyLilliaDesktop 的单个值，不会删除注册表键或其他程序的值。
     /// </summary>
-    public static void MigrateFromLegacyRegistry() => _ = TryMigrateFromLegacyRegistry();
-
-    internal static StartupOperationResult TryMigrateFromLegacyRegistry()
+    internal static StartupOperationResult TryCleanupInvalidRegistryStartup()
     {
         if (!PlatformHelper.IsWindows)
             return StartupOperationResult.Succeeded();
@@ -121,28 +127,15 @@ public static class StartupManager
         {
             lock (SyncRoot)
             {
-                if (!TryReadStartupRegistryValue(out var registryValue, out var registryError))
-                    return StartupOperationResult.Failed(registryError);
-
-                if (string.IsNullOrWhiteSpace(registryValue))
-                    return StartupOperationResult.Succeeded();
-
                 if (!TryGetCurrentExecutablePath(out var exePath, out var pathError))
                     return StartupOperationResult.Failed(pathError);
 
-                // 指向当前程序的旧值仍然有效，不再强制迁移到可能需要更高权限的计划任务。
-                if (StartupTaskDefinitionParser.CommandLineTargetsExecutable(registryValue, exePath))
-                    return StartupOperationResult.Succeeded();
-
-                var cleanup = CleanupStartupRegistry();
-                return cleanup.Success
-                    ? StartupOperationResult.Succeeded("已清理指向旧程序路径的开机自启项。")
-                    : cleanup;
+                return ValidateRegistryStartup(exePath, out _);
             }
         }
         catch (Exception ex)
         {
-            return StartupOperationResult.Failed($"检查旧版开机自启配置时发生异常：{ex.Message}");
+            return StartupOperationResult.Failed($"检查开机自启注册表值时发生异常：{ex.Message}");
         }
     }
 
@@ -152,8 +145,12 @@ public static class StartupManager
         if (!TryGetCurrentExecutablePath(out var exePath, out var pathError))
             return StartupOperationResult.Failed(pathError);
 
-        // 已经通过注册表后备启用时，不要在每次保存或启动时重复触发 schtasks。
-        if (IsRegistryStartupEnabled(exePath))
+        var registryValidation = ValidateRegistryStartup(exePath, out var registryEnabled);
+        if (!registryValidation.Success)
+            return registryValidation;
+
+        // 已经通过注册表后备启用时，不要在每次保存时重复触发 schtasks。
+        if (registryEnabled)
             return StartupOperationResult.Succeeded();
 
         var existingTask = InspectScheduledTask(exePath);
@@ -361,10 +358,57 @@ public static class StartupManager
     }
 
     [SupportedOSPlatform("windows")]
-    private static bool IsRegistryStartupEnabled(string executablePath)
+    private static StartupOperationResult ValidateRegistryStartup(
+        string executablePath,
+        out bool isEnabled)
     {
-        return TryReadStartupRegistryValue(out var value, out _) &&
-               StartupTaskDefinitionParser.CommandLineTargetsExecutable(value, executablePath);
+        isEnabled = false;
+
+        if (!TryReadStartupRegistryValue(out var registryValue, out var registryError))
+            return StartupOperationResult.Failed(registryError);
+
+        if (string.IsNullOrWhiteSpace(registryValue))
+            return StartupOperationResult.Succeeded();
+
+        if (StartupTaskDefinitionParser.CommandLineTargetsExecutable(registryValue, executablePath))
+        {
+            isEnabled = true;
+            return StartupOperationResult.Succeeded();
+        }
+
+        if (!IsApplicationStartupCommand(registryValue, executablePath))
+        {
+            return StartupOperationResult.Failed(
+                "检测到同名开机启动值，但无法确认它属于当前应用；为避免误删已保留该值。");
+        }
+
+        // 该值确认属于本应用，但已不再指向当前 EXE。删除时传入原值，
+        // CleanupStartupRegistry 会重新读取并比对，避免并发修改后误删新值。
+        var cleanup = CleanupStartupRegistry(registryValue);
+        return cleanup.Success
+            ? StartupOperationResult.Succeeded("已清理指向旧程序路径或无效命令的开机自启注册表值。")
+            : cleanup;
+    }
+
+    private static bool IsApplicationStartupCommand(
+        string commandLine,
+        string currentExecutablePath)
+    {
+        if (!StartupTaskDefinitionParser.TryGetCommandLineExecutablePath(
+                commandLine,
+                out var configuredExecutablePath))
+        {
+            return false;
+        }
+
+        var configuredFileName = Path.GetFileName(configuredExecutablePath);
+        var currentFileName = Path.GetFileName(currentExecutablePath);
+        if (string.Equals(configuredFileName, currentFileName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return Array.Exists(
+            KnownExecutableNames,
+            knownName => string.Equals(knownName, configuredFileName, StringComparison.OrdinalIgnoreCase));
     }
 
     [SupportedOSPlatform("windows")]
@@ -390,17 +434,44 @@ public static class StartupManager
     }
 
     [SupportedOSPlatform("windows")]
-    private static StartupOperationResult CleanupStartupRegistry()
+    private static StartupOperationResult CleanupStartupRegistry(string? expectedValue = null)
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(StartupRegistryPath, writable: true);
-            key?.DeleteValue(TaskName, throwOnMissingValue: false);
-            return StartupOperationResult.Succeeded();
+            if (key == null)
+                return StartupOperationResult.Succeeded();
+
+            var currentValue = key.GetValue(
+                TaskName,
+                defaultValue: null,
+                RegistryValueOptions.DoNotExpandEnvironmentNames);
+            if (currentValue == null)
+                return StartupOperationResult.Succeeded();
+
+            if (expectedValue != null &&
+                (currentValue is not string currentText ||
+                 !string.Equals(currentText, expectedValue, StringComparison.Ordinal)))
+            {
+                return StartupOperationResult.Failed(
+                    "开机自启注册表值在检查期间发生变化，为避免误删已取消清理。");
+            }
+
+            // 安全边界：只删除 HKCU\...\Run 下名为 LuckyLilliaDesktop 的单个值。
+            // 不删除 Run 键本身，也不枚举或修改其他程序的启动项。
+            key.DeleteValue(TaskName, throwOnMissingValue: false);
+
+            var remainingValue = key.GetValue(
+                TaskName,
+                defaultValue: null,
+                RegistryValueOptions.DoNotExpandEnvironmentNames);
+            return remainingValue == null
+                ? StartupOperationResult.Succeeded()
+                : StartupOperationResult.Failed("删除开机自启注册表值后校验失败，该值仍然存在。");
         }
         catch (Exception ex)
         {
-            return StartupOperationResult.Failed($"清理开机自启注册表项失败：{ex.Message}");
+            return StartupOperationResult.Failed($"清理开机自启注册表值失败：{ex.Message}");
         }
     }
 

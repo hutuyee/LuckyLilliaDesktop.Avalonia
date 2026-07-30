@@ -124,10 +124,21 @@ internal static class StartupTaskDefinitionParser
 
     public static bool CommandLineTargetsExecutable(string? commandLine, string expectedExecutablePath)
     {
-        if (string.IsNullOrWhiteSpace(commandLine) || string.IsNullOrWhiteSpace(expectedExecutablePath))
+        return TryGetCommandLineExecutablePath(commandLine, out var executablePath) &&
+               PathsEqual(executablePath, expectedExecutablePath);
+    }
+
+    public static bool TryGetCommandLineExecutablePath(
+        string? commandLine,
+        out string executablePath)
+    {
+        executablePath = string.Empty;
+        if (string.IsNullOrWhiteSpace(commandLine))
             return false;
 
         var trimmed = Environment.ExpandEnvironmentVariables(commandLine.Trim());
+        string candidate;
+
         if (trimmed.StartsWith('"'))
         {
             var closingQuote = trimmed.IndexOf('"', 1);
@@ -137,24 +148,41 @@ internal static class StartupTaskDefinitionParser
                 return false;
             }
 
-            return PathsEqual(trimmed[1..closingQuote], expectedExecutablePath);
+            candidate = trimmed[1..closingQuote];
         }
-
-        // 旧版值有时没有引号。先把整个值当作路径，再按预期 EXE 长度识别附带参数的情况，
-        // 避免直接按空格切割导致中文或空格目录被误判。
-        if (PathsEqual(trimmed, expectedExecutablePath))
-            return true;
-
-        var normalizedExpected = NormalizeExecutablePath(expectedExecutablePath);
-        if (string.IsNullOrWhiteSpace(normalizedExpected) ||
-            trimmed.Length < normalizedExpected.Length ||
-            !trimmed.StartsWith(normalizedExpected, StringComparison.OrdinalIgnoreCase))
+        else
         {
-            return false;
+            // 旧版值可能没有引号且路径中含空格。以第一个后接空白或行尾的 .exe
+            // 作为可执行文件边界，避免直接按空格切割路径。
+            var searchStart = 0;
+            var executableEnd = -1;
+            while (searchStart < trimmed.Length)
+            {
+                var extensionIndex = trimmed.IndexOf(
+                    ".exe",
+                    searchStart,
+                    StringComparison.OrdinalIgnoreCase);
+                if (extensionIndex < 0)
+                    break;
+
+                var candidateEnd = extensionIndex + 4;
+                if (candidateEnd == trimmed.Length || char.IsWhiteSpace(trimmed[candidateEnd]))
+                {
+                    executableEnd = candidateEnd;
+                    break;
+                }
+
+                searchStart = candidateEnd;
+            }
+
+            if (executableEnd <= 0)
+                return false;
+
+            candidate = trimmed[..executableEnd];
         }
 
-        return trimmed.Length == normalizedExpected.Length ||
-               char.IsWhiteSpace(trimmed[normalizedExpected.Length]);
+        executablePath = NormalizeExecutablePath(candidate) ?? string.Empty;
+        return executablePath.Length > 0;
     }
 
     public static bool PathsEqual(string? left, string? right)

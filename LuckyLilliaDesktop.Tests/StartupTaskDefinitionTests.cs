@@ -98,6 +98,32 @@ public class StartupTaskDefinitionTests
     }
 
     [Theory]
+    [InlineData("\"C:\\Users\\hutuy\\Desktop\\api\\lucky-lillia-desktop.exe\" --startup-delay=5",
+        "C:\\Users\\hutuy\\Desktop\\api\\lucky-lillia-desktop.exe")]
+    [InlineData("C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe --minimized",
+        "C:\\Users\\测试 用户\\Lucky Lillia\\LuckyLilliaDesktop.exe")]
+    public void CommandLineExecutablePath_IsExtracted(string commandLine, string expectedPath)
+    {
+        var parsed = StartupTaskDefinitionParser.TryGetCommandLineExecutablePath(
+            commandLine,
+            out var executablePath);
+
+        Assert.True(parsed);
+        Assert.True(StartupTaskDefinitionParser.PathsEqual(expectedPath, executablePath));
+    }
+
+    [Theory]
+    [InlineData("\"C:\\Old\\lucky-lillia-desktop.exe")]
+    [InlineData("C:\\Tools\\LuckyLilliaDesktop.exe.old")]
+    [InlineData("not-an-executable")]
+    public void InvalidCommandLineExecutablePath_IsRejected(string commandLine)
+    {
+        Assert.False(StartupTaskDefinitionParser.TryGetCommandLineExecutablePath(
+            commandLine,
+            out _));
+    }
+
+    [Theory]
     [InlineData("HighestAvailable", "InteractiveToken")]
     [InlineData("1", "InteractiveToken")]
     [InlineData("LeastPrivilege", "Password")]

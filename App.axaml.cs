@@ -28,18 +28,18 @@ public partial class App : Application
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         Console.CancelKeyPress += OnCancelKeyPress;
         
-        // 检查并清理指向旧程序路径的注册表自启项。
-        // 注册表访问放到后台执行，避免拖慢主窗口显示。
+        // 程序被移动后，旧路径的 HKCU Run 值已经无法启动当前程序。
+        // 后台安全清理本应用自己的单个注册表值，避免阻塞主窗口显示。
         _ = Task.Run(() =>
         {
-            var startupMigration = StartupManager.TryMigrateFromLegacyRegistry();
-            if (!startupMigration.Success)
+            var cleanup = StartupManager.TryCleanupInvalidRegistryStartup();
+            if (!cleanup.Success)
             {
-                Log.Warning("检查旧版开机自启配置失败: {ErrorMessage}", startupMigration.ErrorMessage);
+                Log.Warning("清理无效开机自启注册表值失败: {ErrorMessage}", cleanup.ErrorMessage);
             }
-            else if (!string.IsNullOrWhiteSpace(startupMigration.DiagnosticMessage))
+            else if (!string.IsNullOrWhiteSpace(cleanup.DiagnosticMessage))
             {
-                Log.Warning("开机自启兼容检查完成但存在提示: {DiagnosticMessage}", startupMigration.DiagnosticMessage);
+                Log.Information("{DiagnosticMessage}", cleanup.DiagnosticMessage);
             }
         });
         
